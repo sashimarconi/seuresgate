@@ -1,13 +1,10 @@
-function getBasicAuthHeader() {
-  const secretKey = process.env.GHOSTSPAY_SECRET_KEY;
-  const companyId = process.env.GHOSTSPAY_COMPANY_ID;
-
-  if (!secretKey || !companyId) {
-    return null;
-  }
-
-  const credentials = Buffer.from(`${secretKey}:${companyId}`).toString("base64");
-  return `Basic ${credentials}`;
+function getParadiseApiKey() {
+  return (
+    process.env.PARADISE_SECRET_KEY ||
+    process.env.PARADISE_API_KEY ||
+    process.env.X_API_KEY ||
+    ""
+  ).trim();
 }
 
 function pickFirst(obj, paths) {
@@ -76,10 +73,7 @@ function normalizeDocument(documentValue) {
   if (!documentValue) return undefined;
   const digits = String(documentValue).replace(/\D/g, "");
   if (!digits) return undefined;
-  return {
-    type: digits.length > 11 ? "CNPJ" : "CPF",
-    number: digits,
-  };
+  return digits;
 }
 
 function isValidCpf(cpf) {
@@ -125,6 +119,10 @@ function normalizePhone(phoneValue) {
   return `11${String(Math.floor(900000000 + Math.random() * 99999999))}`;
 }
 
+function generateReference() {
+  return `RESGATE-${Date.now()}-${Math.floor(Math.random() * 10000)}`;
+}
+
 function normalizeEmail(emailValue) {
   const email = String(emailValue || "").trim();
   if (/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return email;
@@ -136,16 +134,17 @@ module.exports = async function handler(req, res) {
     return res.status(405).json({ error: "Method not allowed" });
   }
 
-  const authHeader = getBasicAuthHeader();
-  if (!authHeader) {
-    return res.status(500).json({ error: "GhostsPay credentials are not configured" });
+  const apiKey = getParadiseApiKey();
+  if (!apiKey) {
+    return res.status(500).json({ error: "Paradise API key is not configured" });
   }
 
   try {
     const body = typeof req.body === "string" ? JSON.parse(req.body || "{}") : (req.body || {});
     const amount = Number(body.amount_cents);
     const customer = body.customer || {};
-    const productHash = body.product_hash || "prod_default";
+    const productHash = String(body.product_hash || "").trim();
+    const reference = String(body.reference || "").trim() || generateReference();
 
     if (!Number.isFinite(amount) || amount < 100) {
       return res.status(400).json({ error: "amount_cents must be at least 100" });
@@ -156,33 +155,41 @@ module.exports = async function handler(req, res) {
 
     const payload = {
       amount,
-      paymentMethod: "PIX",
+      description: String(body.description || "Pagamento PIX").trim() || "Pagamento PIX",
+      reference,
+      source: "api_externa",
       customer: {
         name: customer.name || "Cliente",
         email: normalizeEmail(customer.email),
         phone: normalizePhone(customer.phone),
         document: normalizeDocument(cpf),
       },
-      items: [
-        {
-          title: "Pagamento PIX",
-          unitPrice: amount,
-          quantity: 1,
-          externalRef: productHash,
-        },
-      ],
-      metadata: {
-        product_hash: productHash,
-      },
-      pix: {
-        expiresInDays: 1,
-      },
     };
 
-    const response = await fetch("https://api.ghostspaysv2.com/functions/v1/transactions", {
+    if (productHash) {
+      payload.productHash = productHash;
+    }
+
+    if (body.postback_url) {
+      payload.postback_url = String(body.postback_url);
+    }
+
+    if (body.orderbump) {
+      payload.orderbump = body.orderbump;
+    }
+
+    if (body.tracking && typeof body.tracking === "object") {
+      payload.tracking = body.tracking;
+    }
+
+    if (Array.isArray(body.splits) && body.splits.length > 0) {
+      payload.splits = body.splits;
+    }
+
+    const response = await fetch("https://multi.paradisepags.com/api/v1/transaction.php", {
       method: "POST",
       headers: {
-        Authorization: authHeader,
+        "X-API-Key": apiKey,
         "Content-Type": "application/json",
         Accept: "application/json",
       },
@@ -199,7 +206,7 @@ module.exports = async function handler(req, res) {
 
     if (!response.ok) {
       return res.status(response.status).json({
-        error: "GhostsPay create transaction failed",
+        error: "Paradise create transaction failed",
         details: data,
       });
     }
@@ -212,6 +219,7 @@ module.exports = async function handler(req, res) {
       "payment.pix.qrCode",
       "pix.copyPaste",
       "copyPaste",
+      "pix_code",
     ]) || "";
 
     if (!qrCode) {

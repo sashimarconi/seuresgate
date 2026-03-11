@@ -1,13 +1,10 @@
-function getBasicAuthHeader() {
-  const secretKey = process.env.GHOSTSPAY_SECRET_KEY;
-  const companyId = process.env.GHOSTSPAY_COMPANY_ID;
-
-  if (!secretKey || !companyId) {
-    return null;
-  }
-
-  const credentials = Buffer.from(`${secretKey}:${companyId}`).toString("base64");
-  return `Basic ${credentials}`;
+function getParadiseApiKey() {
+  return (
+    process.env.PARADISE_SECRET_KEY ||
+    process.env.PARADISE_API_KEY ||
+    process.env.X_API_KEY ||
+    ""
+  ).trim();
 }
 
 function pickFirst(obj, paths) {
@@ -25,9 +22,9 @@ module.exports = async function handler(req, res) {
     return res.status(405).json({ error: "Method not allowed" });
   }
 
-  const authHeader = getBasicAuthHeader();
-  if (!authHeader) {
-    return res.status(500).json({ error: "GhostsPay credentials are not configured" });
+  const apiKey = getParadiseApiKey();
+  if (!apiKey) {
+    return res.status(500).json({ error: "Paradise API key is not configured" });
   }
 
   try {
@@ -38,10 +35,10 @@ module.exports = async function handler(req, res) {
       return res.status(400).json({ error: "transaction_id is required" });
     }
 
-    const response = await fetch(`https://api.ghostspaysv2.com/functions/v1/transactions/${encodeURIComponent(transactionId)}`, {
+    const response = await fetch(`https://multi.paradisepags.com/api/v1/query.php?action=get_transaction&id=${encodeURIComponent(transactionId)}`, {
       method: "GET",
       headers: {
-        Authorization: authHeader,
+        "X-API-Key": apiKey,
         Accept: "application/json",
       },
     });
@@ -56,7 +53,7 @@ module.exports = async function handler(req, res) {
 
     if (!response.ok) {
       return res.status(response.status).json({
-        error: "GhostsPay check transaction failed",
+        error: "Paradise check transaction failed",
         details: data,
       });
     }
