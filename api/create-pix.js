@@ -1,10 +1,20 @@
-function getParadiseApiKey() {
-  return (
-    process.env.PARADISE_SECRET_KEY ||
-    process.env.PARADISE_API_KEY ||
-    process.env.X_API_KEY ||
-    ""
-  ).trim();
+const GHOSTSPAY_API_BASE_URL = process.env.GHOSTSPAY_API_BASE_URL || "https://api.ghostspaysv2.com/functions/v1";
+
+function getBasicAuthHeader() {
+  const directBasic = String(process.env.GHOSTSPAY_BASIC_AUTH || "").trim();
+  if (directBasic) {
+    return directBasic.startsWith("Basic ") ? directBasic : `Basic ${directBasic}`;
+  }
+
+  const secretKey = process.env.GHOSTSPAY_SECRET_KEY;
+  const companyId = process.env.GHOSTSPAY_COMPANY_ID;
+
+  if (!secretKey || !companyId) {
+    return null;
+  }
+
+  const credentials = Buffer.from(`${secretKey}:${companyId}`).toString("base64");
+  return `Basic ${credentials}`;
 }
 
 function pickFirst(obj, paths) {
@@ -134,17 +144,19 @@ module.exports = async function handler(req, res) {
     return res.status(405).json({ error: "Method not allowed" });
   }
 
-  const apiKey = getParadiseApiKey();
-  if (!apiKey) {
-    return res.status(500).json({ error: "Paradise API key is not configured" });
+  const authHeader = getBasicAuthHeader();
+  if (!authHeader) {
+    return res.status(500).json({
+      error: "GhostsPay credentials are not configured",
+      details: "Configure GHOSTSPAY_BASIC_AUTH or both GHOSTSPAY_SECRET_KEY and GHOSTSPAY_COMPANY_ID",
+    });
   }
 
   try {
     const body = typeof req.body === "string" ? JSON.parse(req.body || "{}") : (req.body || {});
     const amount = Number(body.amount_cents);
     const customer = body.customer || {};
-    const productHash = String(body.product_hash || "").trim();
-    const reference = String(body.reference || "").trim() || generateReference();
+    const productHash = body.product_hash || "prod_default";
 
     if (!Number.isFinite(amount) || amount < 100) {
       return res.status(400).json({ error: "amount_cents must be at least 100" });
@@ -155,41 +167,33 @@ module.exports = async function handler(req, res) {
 
     const payload = {
       amount,
-      description: String(body.description || "Pagamento PIX").trim() || "Pagamento PIX",
-      reference,
-      source: "api_externa",
+      paymentMethod: "PIX",
       customer: {
         name: customer.name || "Cliente",
         email: normalizeEmail(customer.email),
         phone: normalizePhone(customer.phone),
         document: normalizeDocument(cpf),
       },
+      items: [
+        {
+          title: "Pagamento PIX",
+          unitPrice: amount,
+          quantity: 1,
+          externalRef: productHash,
+        },
+      ],
+      metadata: {
+        product_hash: productHash,
+      },
+      pix: {
+        expiresInDays: 1,
+      },
     };
 
-    if (productHash) {
-      payload.productHash = productHash;
-    }
-
-    if (body.postback_url) {
-      payload.postback_url = String(body.postback_url);
-    }
-
-    if (body.orderbump) {
-      payload.orderbump = body.orderbump;
-    }
-
-    if (body.tracking && typeof body.tracking === "object") {
-      payload.tracking = body.tracking;
-    }
-
-    if (Array.isArray(body.splits) && body.splits.length > 0) {
-      payload.splits = body.splits;
-    }
-
-    const response = await fetch("https://multi.paradisepags.com/api/v1/transaction.php", {
+    const response = await fetch(`${GHOSTSPAY_API_BASE_URL}/transactions`, {
       method: "POST",
       headers: {
-        "X-API-Key": apiKey,
+        Authorization: authHeader,
         "Content-Type": "application/json",
         Accept: "application/json",
       },
@@ -206,7 +210,7 @@ module.exports = async function handler(req, res) {
 
     if (!response.ok) {
       return res.status(response.status).json({
-        error: "Paradise create transaction failed",
+        error: "GhostsPay create transaction failed",
         details: data,
       });
     }
