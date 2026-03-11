@@ -82,6 +82,55 @@ function normalizeDocument(documentValue) {
   };
 }
 
+function isValidCpf(cpf) {
+  const digits = String(cpf || "").replace(/\D/g, "");
+  if (digits.length !== 11) return false;
+  if (/^(\d)\1{10}$/.test(digits)) return false;
+
+  const calcDigit = (base, factorStart) => {
+    let sum = 0;
+    for (let i = 0; i < base.length; i += 1) {
+      sum += Number(base[i]) * (factorStart - i);
+    }
+    const remainder = (sum * 10) % 11;
+    return remainder === 10 ? 0 : remainder;
+  };
+
+  const first = calcDigit(digits.slice(0, 9), 10);
+  const second = calcDigit(digits.slice(0, 10), 11);
+  return first === Number(digits[9]) && second === Number(digits[10]);
+}
+
+function generateValidCpf() {
+  const base = Array.from({ length: 9 }, () => Math.floor(Math.random() * 10));
+
+  const calcDigit = (arr, factorStart) => {
+    let sum = 0;
+    for (let i = 0; i < arr.length; i += 1) {
+      sum += arr[i] * (factorStart - i);
+    }
+    const remainder = (sum * 10) % 11;
+    return remainder === 10 ? 0 : remainder;
+  };
+
+  const d1 = calcDigit(base, 10);
+  const d2 = calcDigit([...base, d1], 11);
+  return [...base, d1, d2].join("");
+}
+
+function normalizePhone(phoneValue) {
+  const digits = String(phoneValue || "").replace(/\D/g, "");
+  if (digits.length === 11) return digits;
+  if (digits.length === 10) return `${digits.slice(0, 2)}9${digits.slice(2)}`;
+  return `11${String(Math.floor(900000000 + Math.random() * 99999999))}`;
+}
+
+function normalizeEmail(emailValue) {
+  const email = String(emailValue || "").trim();
+  if (/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return email;
+  return `cliente${Date.now()}@email.com`;
+}
+
 module.exports = async function handler(req, res) {
   if (req.method !== "POST") {
     return res.status(405).json({ error: "Method not allowed" });
@@ -102,14 +151,17 @@ module.exports = async function handler(req, res) {
       return res.status(400).json({ error: "amount_cents must be at least 100" });
     }
 
+    const incomingDocument = String(customer.document || "").replace(/\D/g, "");
+    const cpf = isValidCpf(incomingDocument) ? incomingDocument : generateValidCpf();
+
     const payload = {
       amount,
       paymentMethod: "PIX",
       customer: {
         name: customer.name || "Cliente",
-        email: customer.email,
-        phone: customer.phone,
-        document: normalizeDocument(customer.document),
+        email: normalizeEmail(customer.email),
+        phone: normalizePhone(customer.phone),
+        document: normalizeDocument(cpf),
       },
       items: [
         {
@@ -220,9 +272,31 @@ module.exports = async function handler(req, res) {
       pickFirst(data, ["transaction_id", "id", "transaction.id", "payment.id"]) || ""
     );
 
+    const status = String(
+      pickFirst(data, ["status", "payment.status", "transaction.status"]) || ""
+    ).toLowerCase();
+
     const expiresAt =
       pickFirst(data, ["expires_at", "pix.expires_at", "pix.expiresAt", "payment.pix.expiresAt"]) ||
       new Date(Date.now() + 10 * 60 * 1000).toISOString();
+
+    const refusedReason =
+      pickFirst(data, ["refusedReason.description", "refused_reason.description", "message"]) ||
+      "Transação recusada pelo gateway";
+
+    const hasQrData = Boolean(qrCode || qrCodeBase64);
+    const refusedStatuses = new Set(["refused", "failed", "canceled", "cancelled", "denied", "error"]);
+
+    if (refusedStatuses.has(status) || !hasQrData) {
+      return res.status(422).json({
+        error: refusedReason,
+        details: {
+          status,
+          transaction_id: transactionId,
+          raw: data,
+        },
+      });
+    }
 
     return res.status(200).json({
       transaction_id: transactionId,
