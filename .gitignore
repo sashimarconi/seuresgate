@@ -1,0 +1,9 @@
+# HTTrack sensitive/cache files
+cookies.txt
+hts-log.txt
+hts-cache/
+
+# OS/editor
+.DS_Store
+Thumbs.db
+.vscode/
